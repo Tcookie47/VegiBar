@@ -166,6 +166,22 @@ textarea {
   border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px;
 }
 
+/* Nutrition */
+.badges { display: flex; flex-wrap: wrap; gap: 8px; }
+.badge { color: #fff; font-size: .85rem; font-weight: 600; padding: 5px 10px; border-radius: 8px; }
+.badge b { font-size: 1rem; margin-left: 2px; }
+.ns-a { background: #038141; } .ns-b { background: #85bb2f; } .ns-c { background: #fecb02; color: #1f2937; }
+.ns-d { background: #ee8100; } .ns-e { background: #e63e11; }
+.nova-1 { background: #00aa00; } .nova-2 { background: #e6b800; color: #1f2937; }
+.nova-3 { background: #ff6600; } .nova-4 { background: #d00000; }
+.nutrition table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: .95rem; }
+.nutrition th, .nutrition td { padding: 7px 2px; border-bottom: 1px solid var(--border); }
+.nutrition th { text-align: left; font-weight: 500; }
+.nutrition td { text-align: right; font-variant-numeric: tabular-nums; }
+.nutrition tr.sub th { padding-left: 16px; color: var(--muted); font-weight: 400; }
+.cached { margin: 0; font-size: .9rem; color: var(--muted); }
+.link { background: none; border: 0; padding: 0; font: inherit; font-weight: 600; color: var(--brand); text-decoration: underline; cursor: pointer; }
+
 /* History */
 .history h2 { font-size: 1rem; margin: 0 0 8px 4px; color: var(--muted); }
 .history ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }

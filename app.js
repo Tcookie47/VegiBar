@@ -22,8 +22,11 @@ const OFF_FIELDS = [
   'code', 'product_name', 'product_name_en', 'brands', 'image_front_small_url',
   'ingredients_text', 'ingredients_text_en', 'ingredients_analysis_tags',
   'labels_tags', 'allergens_tags', 'traces_tags',
+  'nutriments', 'nutriscore_grade', 'nova_group', 'serving_size',
 ].join(',');
 const HISTORY_MAX = 25;
+const CACHE_MAX = 500;
+const CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 const VERDICT_TEXT = {
   vegan: 'Vegan',
@@ -44,6 +47,30 @@ const store = {
     try { localStorage.setItem('vegibar.' + key, JSON.stringify(value)); } catch {}
   },
 };
+// ---------- Result cache ----------
+// Finished results keyed by barcode, so a repeat scan needs no network or LLM call.
+// A verdict depends on the egg setting, so entries made under another setting miss.
+function cacheGet(code) {
+  const hit = store.get('cache', {})[code];
+  if (!hit || hit.eggMode !== settings().eggMode || Date.now() - hit.at > CACHE_TTL_MS) return null;
+  return hit;
+}
+
+function cachePut(entry) {
+  const cache = store.get('cache', {});
+  cache[entry.meta.code] = entry;
+  let codes = Object.keys(cache).sort((a, b) => cache[b].at - cache[a].at);
+  for (const c of codes.slice(CACHE_MAX)) delete cache[c];
+  codes = codes.slice(0, CACHE_MAX);
+  // If storage is full, drop the oldest half and try again
+  try {
+    localStorage.setItem('vegibar.cache', JSON.stringify(cache));
+  } catch {
+    for (const c of codes.slice(Math.ceil(codes.length / 2))) delete cache[c];
+    store.set('cache', cache);
+  }
+}
+
 const settings = () => ({
   apiKey: store.get('apiKey', ''),
   model: store.get('model', '') || DEFAULT_MODEL,
@@ -258,6 +285,28 @@ function productHints(p) {
   ];
 }
 
+const NUTRIENTS = [
+  ['energy-kcal', 'Energy', 'kcal'],
+  ['fat', 'Fat', 'g'],
+  ['saturated-fat', '  of which saturated', 'g'],
+  ['carbohydrates', 'Carbohydrates', 'g'],
+  ['sugars', '  of which sugars', 'g'],
+  ['fiber', 'Fibre', 'g'],
+  ['proteins', 'Protein', 'g'],
+  ['salt', 'Salt', 'g'],
+];
+
+function productNutrition(p) {
+  const n = p.nutriments || {};
+  const rows = NUTRIENTS
+    .filter(([key]) => typeof n[`${key}_100g`] === 'number')
+    .map(([key, label, unit]) => ({ label, value: n[`${key}_100g`], unit, sub: label.startsWith('  ') }));
+  const grade = /^[a-e]$/.test(p.nutriscore_grade || '') ? p.nutriscore_grade : '';
+  const nova = [1, 2, 3, 4].includes(Number(p.nova_group)) ? Number(p.nova_group) : 0;
+  if (!rows.length && !grade && !nova) return null;
+  return { rows, grade, nova, serving: p.serving_size || '' };
+}
+
 // ---------- OpenRouter ----------
 function systemPrompt(eggMode) {
   const eggRule = eggMode === 'nonveg'
@@ -345,9 +394,16 @@ function normalizeAnalysis(a) {
 }
 
 // ---------- Flows ----------
-async function analyzeBarcode(code) {
+async function analyzeBarcode(code, { fresh = false } = {}) {
   if (!/^\d{6,14}$/.test(code)) {
     setStatus(`"${code}" doesn't look like a product barcode.`, { error: true });
+    return;
+  }
+  const cached = !fresh && cacheGet(code);
+  if (cached) {
+    setStatus('');
+    renderResult(cached.meta, cached.analysis, cached.hints, { cachedAt: cached.at });
+    addHistory({ ...cached, at: Date.now() });
     return;
   }
   els.result.hidden = true;
@@ -366,7 +422,12 @@ async function analyzeBarcode(code) {
   }
   const ingredients = productIngredients(product);
   const name = product.product_name_en || product.product_name || 'Unnamed product';
-  const meta = { code, name, brand: product.brands || '', image: product.image_front_small_url || '' };
+  const meta = {
+    code, name,
+    brand: product.brands || '',
+    image: product.image_front_small_url || '',
+    nutrition: productNutrition(product),
+  };
   if (!ingredients) {
     setStatus('');
     renderMissing(code, `Found “${name}”, but it has no ingredient list in the database.`, meta, productHints(product));
@@ -423,6 +484,7 @@ async function analyzePhoto(file, meta = {}) {
       name: meta.name || analysis.productName || 'Photographed label',
       brand: meta.brand || '',
       image: meta.image || dataUrl,
+      nutrition: meta.nutrition || null,
       fromPhoto: true,
     }, analysis, []);
   } catch (e) {
@@ -442,7 +504,13 @@ function handleLlmError(e) {
 function finish(meta, analysis, hints) {
   setStatus('');
   renderResult(meta, analysis, hints);
-  addHistory({ meta: { ...meta, image: meta.fromPhoto ? '' : meta.image }, analysis, hints, at: Date.now() });
+  // Don't persist a photo's data URL; it would eat the storage quota
+  const entry = {
+    meta: { ...meta, image: meta.image?.startsWith('data:') ? '' : meta.image },
+    analysis, hints, at: Date.now(), eggMode: settings().eggMode,
+  };
+  addHistory(entry);
+  if (meta.code) cachePut(entry);
 }
 
 function downscale(file, maxSide) {
@@ -470,7 +538,31 @@ function productHeader(meta) {
   return `<div class="product">${img}<div><h2>${esc(meta.name)}</h2><div class="sub">${sub}</div></div></div>`;
 }
 
-function renderResult(meta, a, hints) {
+function nutritionHtml(n) {
+  if (!n) return '';
+  const fmt = (v) => (v >= 100 ? Math.round(v) : Math.round(v * 10) / 10);
+  const badges = [
+    n.grade ? `<span class="badge ns-${n.grade}">Nutri‑Score <b>${n.grade.toUpperCase()}</b></span>` : '',
+    n.nova ? `<span class="badge nova-${n.nova}" title="1 = unprocessed, 4 = ultra-processed">NOVA <b>${n.nova}</b></span>` : '',
+  ].join('');
+  const table = n.rows.length ? `
+    <details class="nutrition">
+      <summary>Nutrition per 100 g</summary>
+      <table>${n.rows.map((r) => `
+        <tr class="${r.sub ? 'sub' : ''}"><th>${esc(r.label.trim())}</th><td>${fmt(r.value)} ${r.unit}</td></tr>`).join('')}
+      </table>
+      ${n.serving ? `<p class="foot">Serving size: ${esc(n.serving)}</p>` : ''}
+    </details>` : '';
+  return `${badges ? `<div class="badges">${badges}</div>` : ''}${table}`;
+}
+
+function timeAgo(t) {
+  const days = Math.floor((Date.now() - t) / 86400000);
+  if (days < 1) return 'today';
+  return days === 1 ? 'yesterday' : `${days} days ago`;
+}
+
+function renderResult(meta, a, hints, { cachedAt = 0 } = {}) {
   const flags = a.flagged.length
     ? `<ul class="flags">${a.flagged.map((f) => `
         <li class="${esc(f.category)}">
@@ -494,16 +586,20 @@ function renderResult(meta, a, hints) {
       <h3>Why</h3>
       ${flags}
     </div>
+    ${nutritionHtml(meta.nutrition)}
     <details>
       <summary>Ingredients${hints.length ? ' & database tags' : ''}</summary>
       <p class="ingredients">${esc(a.ingredientsRead || '—')}</p>
       ${hintTags}
     </details>
+    ${cachedAt && meta.code ? `<p class="cached">Saved result from ${timeAgo(cachedAt)}. <button class="link" id="recheckBtn">Re-check</button></p>` : ''}
     <p class="foot">Checked by ${esc(a.model || 'LLM')}${meta.fromPhoto ? ' from a photo' : ' using Open Food Facts data'}. AI can make mistakes — check the pack for allergies or strict diets.</p>
     <button class="btn primary" id="againBtn">Scan another</button>
   `;
   els.result.hidden = false;
   $('againBtn').onclick = () => { els.result.hidden = true; window.scrollTo({ top: 0, behavior: 'smooth' }); startScan(); };
+  const recheck = $('recheckBtn');
+  if (recheck) recheck.onclick = () => analyzeBarcode(meta.code, { fresh: true });
   els.result.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
@@ -549,7 +645,7 @@ els.historyList.addEventListener('click', (e) => {
   const btn = e.target.closest('button[data-i]');
   if (!btn) return;
   const h = store.get('history', [])[Number(btn.dataset.i)];
-  if (h) { setStatus(''); renderResult(h.meta, h.analysis, h.hints || []); }
+  if (h) { setStatus(''); renderResult(h.meta, h.analysis, h.hints || [], { cachedAt: h.at }); }
 });
 
 // ---------- Settings ----------
@@ -570,7 +666,12 @@ els.settings.addEventListener('close', () => {
   setTimeout(() => setStatus(''), 1500);
 });
 
-els.clearHistory.onclick = () => { store.set('history', []); renderHistory(); };
+els.clearHistory.onclick = () => {
+  store.set('history', []);
+  store.set('cache', {});
+  renderHistory();
+  setStatus('History and saved results cleared.');
+};
 
 // ---------- Wire up ----------
 let pendingPhotoMeta = null;

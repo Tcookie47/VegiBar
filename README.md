@@ -28,6 +28,11 @@ silently ignored.
 - **Indian or Western convention.** Eggs count as non‑veg by default, and you
   can change that in settings. Indian green/brown dot marks are used as
   evidence when the database has them.
+- **Nutrition at a glance.** Nutri‑Score and NOVA processing badges, plus a
+  per‑100 g nutrition table (energy, fat, sugar, protein, salt…) from Open Food Facts.
+- **Instant repeat scans.** Results are saved on the phone for 30 days, so
+  scanning something again shows the answer immediately, with no network or
+  AI call. Tap **Re-check** for a fresh lookup.
 - **Recent scans** are kept on the phone so you can look them up again.
 - **No backend and no account.** It's three static files, free to host on
   GitHub Pages, and can be added to your home screen like an app.
@@ -71,6 +76,7 @@ camera ──► barcode ──► Open Food Facts ──► ingredients + label
 |---|---|
 | Scan | 1080p camera with continuous autofocus. The phone's built-in `BarcodeDetector` is used on Android Chrome, and the [barcode-detector](https://github.com/Sec-ant/barcode-detector) ZXing‑C++ WebAssembly decoder everywhere else (iPhone Safari, Firefox). |
 | Product data | [Open Food Facts](https://world.openfoodfacts.org) provides the name, brand, ingredients, vegan/vegetarian analysis tags, labels and allergens. It is free and needs no key. |
+| Cache | Finished results are saved in the browser's local storage, keyed by barcode: up to 500 products for 30 days. Entries made under a different egg setting are ignored. **⚙︎ → Clear saved data** wipes the cache and history. |
 | Reasoning | An [OpenRouter](https://openrouter.ai) chat model returns JSON with the verdict, confidence, a summary and the flagged ingredients. |
 
 ### Product coverage
