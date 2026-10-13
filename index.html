@@ -11,7 +11,7 @@
   <link rel="icon" href="icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="icon.svg">
   <link rel="stylesheet" href="styles.css">
-  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/barcode-detector@3.2.2/dist/iife/ponyfill.js" defer></script>
   <script src="app.js" defer></script>
 </head>
 <body>
@@ -22,7 +22,11 @@
 
   <main>
     <section id="scanner" class="card scanner">
-      <div id="reader" class="reader" hidden></div>
+      <div id="reader" class="reader" hidden>
+        <video id="video" playsinline muted autoplay></video>
+        <div class="aim"><div class="laser"></div></div>
+        <button id="torchBtn" class="torch" type="button" aria-label="Toggle flashlight" hidden>🔦</button>
+      </div>
       <div id="readerPlaceholder" class="reader-placeholder">
         <div class="big-icon">▮▯▮▮▯▮</div>
         <p>Point your camera at a product barcode</p>

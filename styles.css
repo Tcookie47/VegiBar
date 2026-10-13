@@ -62,7 +62,24 @@ main { max-width: 560px; margin: 0 auto; padding: 16px; display: grid; gap: 16px
   width: 100%; aspect-ratio: 4 / 3;
   border-radius: 12px; overflow: hidden; background: #000;
 }
-.reader video { width: 100% !important; height: 100% !important; object-fit: cover; }
+.reader { position: relative; }
+.reader video { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* Matches the crop region decoded in app.js (SCAN_REGION) */
+.aim {
+  position: absolute; left: 7.5%; right: 7.5%; top: 27.5%; bottom: 27.5%;
+  border: 3px solid rgba(255,255,255,.9); border-radius: 12px;
+  box-shadow: 0 0 0 999px rgba(0,0,0,.35);
+}
+.laser {
+  position: absolute; left: 6px; right: 6px; top: 50%; height: 2px;
+  background: #ef4444; box-shadow: 0 0 8px #ef4444; animation: pulse 1.2s ease-in-out infinite;
+}
+@keyframes pulse { 50% { opacity: .35; } }
+.torch {
+  position: absolute; right: 10px; bottom: 10px; width: 44px; height: 44px;
+  border-radius: 50%; border: 0; background: rgba(0,0,0,.55); font-size: 1.2rem;
+}
+.torch.on { background: #facc15; }
 .reader-placeholder {
   display: grid; place-content: center; text-align: center;
   background: repeating-linear-gradient(45deg, transparent 0 10px, rgba(127,127,127,.06) 10px 20px), var(--bg);

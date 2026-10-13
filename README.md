@@ -6,9 +6,11 @@ ingredients that decided it.
 
 ## How it works
 
-1. **Scan** – the phone camera reads the barcode (EAN/UPC/Code128) using
-   [html5-qrcode](https://github.com/mebjas/html5-qrcode), which uses the
-   native `BarcodeDetector` where the browser has one.
+1. **Scan** – the phone camera reads the barcode (EAN/UPC/Code128) at 1080p
+   with continuous autofocus, using the phone's built-in `BarcodeDetector`
+   where it exists (Android Chrome) and the
+   [barcode-detector](https://github.com/Sec-ant/barcode-detector) ZXing-C++
+   WebAssembly decoder everywhere else (iPhone Safari, Firefox).
 2. **Look up** – the ingredient list, labels and allergens come from
    [Open Food Facts](https://world.openfoodfacts.org) (free, no key).
 3. **Reason** – the ingredients go to a free LLM on
