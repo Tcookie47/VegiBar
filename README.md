@@ -134,8 +134,10 @@ There is no build step and no `npm install`. The only third-party script is
   flags them and lowers its confidence rather than guessing silently.
 - **Database entries can be incomplete or out of date.** Recipes change. When in
   doubt, use the photo option on the pack in your hand.
-- **Free models are rate-limited** by OpenRouter and are sometimes busy. The app
-  tries fallback models automatically.
+- **Free models are rate-limited** by OpenRouter and are sometimes busy. The
+  app tries every fallback model, then waits and retries (after 3 s and 8 s)
+  before giving up with a short error and a **Try again** button. A rejected
+  API key stops straight away.
 
 ## Credits
 
