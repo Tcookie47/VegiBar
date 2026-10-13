@@ -113,6 +113,9 @@ input[type=text], input[type=password], input:not([type]), input[inputmode] {
   color: var(--muted); padding: 0 4px;
 }
 .status.error { color: var(--nonveg); }
+.status { flex-wrap: wrap; }
+.error-details { flex-basis: 100%; color: var(--muted); font-size: .8rem; }
+.error-details pre { white-space: pre-wrap; word-break: break-word; margin: 6px 0 0; }
 .spinner {
   width: 18px; height: 18px; flex: none; border-radius: 50%;
   border: 3px solid var(--border); border-top-color: var(--brand);

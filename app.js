@@ -337,38 +337,75 @@ Respond with ONLY a JSON object, no markdown, in this exact shape:
 "flagged" lists every animal-derived or ambiguous ingredient; leave it empty if the product is clearly vegan.`;
 }
 
+// Free models are often briefly rate-limited (429) or overloaded, so each
+// round tries every candidate model, then waits and goes round again.
+const RETRY_DELAYS_MS = [0, 3000, 8000];
+const REQUEST_TIMEOUT_MS = 45000;
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const shortModel = (m) => m.split('/').pop();
+
 async function callOpenRouter(messages, { vision = false } = {}) {
   const { apiKey, model } = settings();
   if (!apiKey) throw new Error('NO_KEY');
-  const candidates = [...new Set([model, ...(vision ? VISION_FALLBACK_MODELS : FALLBACK_MODELS)])];
-  const errors = [];
-  for (const m of candidates) {
-    setStatus(`Asking ${m} to check the ingredients…`, { spin: true });
-    try {
-      const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          'Content-Type': 'application/json',
-          'HTTP-Referer': location.origin,
-          'X-Title': 'VegiBar',
-        },
-        body: JSON.stringify({ model: m, messages, temperature: 0.1 }),
-      });
-      const body = await res.json().catch(() => ({}));
-      if (res.status === 401) throw Object.assign(new Error('Invalid OpenRouter API key (401).'), { fatal: true });
-      if (!res.ok || body.error) throw new Error(body.error?.message || `HTTP ${res.status}`);
-      const text = body.choices?.[0]?.message?.content;
-      const parsed = parseJson(typeof text === 'string' ? text : JSON.stringify(text));
-      if (!parsed || !parsed.verdict) throw new Error('Model did not return valid JSON');
-      parsed.model = body.model || m;
-      return parsed;
-    } catch (e) {
-      if (e.fatal) throw e;
-      errors.push(`${m}: ${e.message}`);
+  let candidates = [...new Set([model, ...(vision ? VISION_FALLBACK_MODELS : FALLBACK_MODELS)])];
+  const errors = new Map(); // latest error per model
+  for (let round = 0; round < RETRY_DELAYS_MS.length && candidates.length; round++) {
+    if (RETRY_DELAYS_MS[round]) {
+      for (let left = RETRY_DELAYS_MS[round] / 1000; left > 0; left--) {
+        setStatus(`Free models are busy. Retrying in ${left}s (attempt ${round + 1} of ${RETRY_DELAYS_MS.length})…`, { spin: true });
+        await sleep(1000);
+      }
+    }
+    for (const m of [...candidates]) {
+      setStatus(`Asking ${shortModel(m)} to check the ingredients…${round ? ` (attempt ${round + 1})` : ''}`, { spin: true });
+      try {
+        return await requestModel(apiKey, m, messages);
+      } catch (e) {
+        if (e.fatal) throw e;
+        errors.set(m, e.message.length > 140 ? e.message.slice(0, 140) + '…' : e.message);
+        // A model that doesn't exist or can't take this input won't work on retry either
+        if (e.permanent) candidates = candidates.filter((c) => c !== m);
+      }
     }
   }
-  throw new Error('All models failed:\n' + errors.join('\n'));
+  throw Object.assign(new Error('The free AI models are busy right now.'), { details: [...errors].map(([m, msg]) => `${shortModel(m)}: ${msg}`) });
+}
+
+async function requestModel(apiKey, m, messages) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
+  let res, body;
+  try {
+    res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      signal: ctrl.signal,
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': location.origin,
+        'X-Title': 'VegiBar',
+      },
+      body: JSON.stringify({ model: m, messages, temperature: 0.1 }),
+    });
+    body = await res.json().catch(() => ({}));
+  } catch (e) {
+    throw new Error(e.name === 'AbortError' ? 'timed out' : 'network error');
+  } finally {
+    clearTimeout(timer);
+  }
+  const status = body.error?.code || res.status;
+  const message = body.error?.message || `HTTP ${res.status}`;
+  if (status === 401) throw Object.assign(new Error('Your OpenRouter API key was rejected (401). Check it in Settings.'), { fatal: true });
+  if (status === 402) throw Object.assign(new Error('OpenRouter says your account has a negative credit balance (402). Top up or check your key at openrouter.ai.'), { fatal: true });
+  if (!res.ok || body.error) {
+    throw Object.assign(new Error(`${status} ${message}`), { permanent: status === 400 || status === 404 });
+  }
+  const text = body.choices?.[0]?.message?.content;
+  const parsed = parseJson(typeof text === 'string' ? text : JSON.stringify(text));
+  if (!parsed || !parsed.verdict) throw new Error('did not return valid JSON');
+  parsed.model = body.model || m;
+  return parsed;
 }
 
 function parseJson(text) {
@@ -452,7 +489,7 @@ async function analyzeText(ingredients, meta, hints = []) {
     analysis.ingredientsRead = ingredients;
     finish(meta, analysis, hints);
   } catch (e) {
-    handleLlmError(e);
+    handleLlmError(e, () => analyzeText(ingredients, meta, hints));
   }
 }
 
@@ -488,17 +525,30 @@ async function analyzePhoto(file, meta = {}) {
       fromPhoto: true,
     }, analysis, []);
   } catch (e) {
-    handleLlmError(e);
+    handleLlmError(e, () => analyzePhoto(file, meta));
   }
 }
 
-function handleLlmError(e) {
+function handleLlmError(e, retry) {
   if (e.message === 'NO_KEY') {
     setStatus('Add your OpenRouter API key in Settings first.', { error: true });
     openSettings();
     return;
   }
   setStatus(e.message, { error: true });
+  if (retry && !e.fatal) {
+    const btn = document.createElement('button');
+    btn.className = 'link';
+    btn.textContent = 'Try again';
+    btn.onclick = retry;
+    els.status.append(' ', btn);
+  }
+  if (e.details?.length) {
+    const d = document.createElement('details');
+    d.className = 'error-details';
+    d.innerHTML = `<summary>Details</summary><pre>${esc(e.details.join('\n'))}</pre>`;
+    els.status.append(d);
+  }
 }
 
 function finish(meta, analysis, hints) {
