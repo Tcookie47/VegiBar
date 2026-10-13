@@ -54,6 +54,9 @@ const settings = () => ({
 const $ = (id) => document.getElementById(id);
 const els = {
   reader: $('reader'),
+  video: $('video'),
+  aim: document.querySelector('.aim'),
+  torchBtn: $('torchBtn'),
   placeholder: $('readerPlaceholder'),
   scanBtn: $('scanBtn'),
   manualBtn: $('manualBtn'),
@@ -84,59 +87,143 @@ function setStatus(text, { spin = false, error = false } = {}) {
 }
 
 // ---------- Scanner ----------
-let scanner = null;
+const BARCODE_FORMATS = ['ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128', 'code_39', 'itf'];
+const SCAN_INTERVAL_MS = 120;
+let stream = null;
 let scanning = false;
+let detector = null;
+let scanTimer = null;
+const frameCanvas = document.createElement('canvas');
+
+// Prefer the phone's built-in detector (Android Chrome); otherwise use the
+// ZXing-C++ WebAssembly ponyfill (iPhone Safari, Firefox, desktop).
+async function getDetector() {
+  if (detector) return detector;
+  if ('BarcodeDetector' in window) {
+    try {
+      const supported = await window.BarcodeDetector.getSupportedFormats();
+      if (supported.includes('ean_13')) {
+        detector = new window.BarcodeDetector({ formats: BARCODE_FORMATS.filter((f) => supported.includes(f)) });
+        return detector;
+      }
+    } catch {}
+  }
+  if (window.BarcodeDetectionAPI?.BarcodeDetector) {
+    detector = new window.BarcodeDetectionAPI.BarcodeDetector({ formats: BARCODE_FORMATS });
+    return detector;
+  }
+  throw new Error('Barcode decoder failed to load. Check your connection, or type the barcode.');
+}
 
 async function startScan() {
-  if (!window.Html5Qrcode) {
-    setStatus('Scanner library failed to load. Check your connection, or type the barcode.', { error: true });
-    return;
-  }
-  if (!window.isSecureContext) {
+  if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
     setStatus('Camera needs HTTPS. Open this app over https:// (e.g. GitHub Pages).', { error: true });
     return;
   }
-  const F = window.Html5QrcodeSupportedFormats;
-  if (!scanner) {
-    scanner = new Html5Qrcode('reader', {
-      verbose: false,
-      formatsToSupport: [F.EAN_13, F.EAN_8, F.UPC_A, F.UPC_E, F.CODE_128, F.CODE_39, F.ITF],
-      experimentalFeatures: { useBarCodeDetectorIfSupported: true },
-    });
-  }
-  els.placeholder.hidden = true;
-  els.reader.hidden = false;
-  els.scanBtn.textContent = 'Stop scanning';
-  scanning = true;
-  setStatus('');
+  els.result.hidden = true;
+  setStatus('Starting camera…', { spin: true });
   try {
-    await scanner.start(
-      { facingMode: 'environment' },
-      {
-        fps: 12,
-        qrbox: (w, h) => ({ width: Math.floor(w * 0.85), height: Math.floor(Math.min(h * 0.5, w * 0.45)) }),
-        aspectRatio: 4 / 3,
-      },
-      onScan,
-      () => {},
-    );
+    const [det, s] = await Promise.all([
+      getDetector(),
+      navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: {
+          facingMode: { ideal: 'environment' },
+          width: { ideal: 1920 },
+          height: { ideal: 1080 },
+        },
+      }),
+    ]);
+    stream = s;
+    const track = stream.getVideoTracks()[0];
+    const caps = track.getCapabilities?.() || {};
+    if (caps.focusMode?.includes('continuous')) {
+      track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }).catch(() => {});
+    }
+    els.torchBtn.hidden = !caps.torch;
+    els.torchBtn.classList.remove('on');
+
+    els.video.srcObject = stream;
+    els.placeholder.hidden = true;
+    els.reader.hidden = false;
+    await els.video.play();
+    scanning = true;
+    els.scanBtn.textContent = 'Stop scanning';
+    setStatus('Hold the barcode inside the box, about a hand-width away.');
+    scanLoop(det);
   } catch (err) {
     await stopScan();
-    setStatus('Could not open the camera: ' + (err?.message || err) + '. You can type the barcode instead.', { error: true });
+    const msg = err?.name === 'NotAllowedError'
+      ? 'Camera permission was denied. Allow camera access for this site in your browser settings.'
+      : 'Could not start scanning: ' + (err?.message || err) + '. You can type the barcode instead.';
+    setStatus(msg, { error: true });
   }
+}
+
+// Decode only the region inside the on-screen aiming box (mapped through
+// object-fit: cover), which is faster and avoids picking up stray codes.
+function grabFrame() {
+  const v = els.video;
+  const vw = v.videoWidth, vh = v.videoHeight;
+  if (!vw || !vh) return null;
+  const box = v.getBoundingClientRect();
+  const aim = els.aim.getBoundingClientRect();
+  const scale = Math.max(box.width / vw, box.height / vh);
+  const offX = (box.width - vw * scale) / 2;
+  const offY = (box.height - vh * scale) / 2;
+  const pad = 0.1; // decode a little beyond the box for tolerance
+  let x = (aim.left - box.left - offX) / scale;
+  let y = (aim.top - box.top - offY) / scale;
+  let w = aim.width / scale;
+  let h = aim.height / scale;
+  x = Math.max(0, x - w * pad); y = Math.max(0, y - h * pad);
+  w = Math.min(vw - x, w * (1 + 2 * pad)); h = Math.min(vh - y, h * (1 + 2 * pad));
+  const out = Math.min(1, 1280 / w);
+  frameCanvas.width = Math.round(w * out);
+  frameCanvas.height = Math.round(h * out);
+  frameCanvas.getContext('2d', { willReadFrequently: true })
+    .drawImage(v, x, y, w, h, 0, 0, frameCanvas.width, frameCanvas.height);
+  return frameCanvas;
+}
+
+async function scanLoop(det) {
+  if (!scanning) return;
+  try {
+    const frame = grabFrame();
+    if (frame) {
+      const codes = await det.detect(frame);
+      const hit = codes.find((c) => /^\d{6,14}$/.test(c.rawValue)) || codes[0];
+      if (hit && scanning) { onScan(hit.rawValue); return; }
+    }
+  } catch (e) {
+    console.warn('detect failed', e);
+  }
+  scanTimer = setTimeout(() => scanLoop(det), SCAN_INTERVAL_MS);
 }
 
 async function stopScan() {
   scanning = false;
+  clearTimeout(scanTimer);
   els.scanBtn.textContent = 'Scan barcode';
-  try { if (scanner?.isScanning) await scanner.stop(); } catch {}
+  stream?.getTracks().forEach((t) => t.stop());
+  stream = null;
+  els.video.srcObject = null;
   els.reader.hidden = true;
   els.placeholder.hidden = false;
 }
 
+async function toggleTorch() {
+  const track = stream?.getVideoTracks()[0];
+  if (!track) return;
+  const on = !els.torchBtn.classList.contains('on');
+  try {
+    await track.applyConstraints({ advanced: [{ torch: on }] });
+    els.torchBtn.classList.toggle('on', on);
+  } catch {}
+}
+
 async function onScan(code) {
   if (!scanning) return;
-  scanning = false;
   if (navigator.vibrate) navigator.vibrate(80);
   await stopScan();
   analyzeBarcode(code.trim());
@@ -489,7 +576,8 @@ els.clearHistory.onclick = () => { store.set('history', []); renderHistory(); };
 let pendingPhotoMeta = null;
 
 els.settingsBtn.onclick = openSettings;
-els.scanBtn.onclick = () => (scanning ? stopScan() : startScan());
+els.scanBtn.onclick = () => (stream ? stopScan() : startScan());
+els.torchBtn.onclick = toggleTorch;
 els.manualBtn.onclick = () => {
   els.manualForm.hidden = !els.manualForm.hidden;
   if (!els.manualForm.hidden) els.manualCode.focus();
